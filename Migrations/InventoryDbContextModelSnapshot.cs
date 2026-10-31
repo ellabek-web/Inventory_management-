@@ -228,7 +228,8 @@ namespace InventorySystem.Backend.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<decimal>("Quantity")
-                        .HasColumnType("decimal(18,2)");
+                        .HasPrecision(18, 3)
+                        .HasColumnType("decimal(18,3)");
 
                     b.Property<decimal>("UnitCost")
                         .HasPrecision(18, 2)
@@ -252,9 +253,16 @@ namespace InventorySystem.Backend.Migrations
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<string>("CustomerName")
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("CustomerPhone")
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
 
                     b.Property<string>("Reference")
                         .IsRequired()
@@ -273,7 +281,14 @@ namespace InventorySystem.Backend.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<Guid>("WarehouseId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("WarehouseId");
+
+                    b.HasIndex("TenantId", "CreatedAtUtc");
 
                     b.HasIndex("TenantId", "Reference")
                         .IsUnique();
@@ -291,7 +306,8 @@ namespace InventorySystem.Backend.Migrations
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<decimal>("Quantity")
-                        .HasColumnType("decimal(18,2)");
+                        .HasPrecision(18, 3)
+                        .HasColumnType("decimal(18,3)");
 
                     b.Property<Guid>("SaleId")
                         .HasColumnType("uniqueidentifier");
@@ -307,6 +323,41 @@ namespace InventorySystem.Backend.Migrations
                     b.HasIndex("SaleId");
 
                     b.ToTable("SaleItems", (string)null);
+                });
+
+            modelBuilder.Entity("InventorySystem.Backend.Models.SalePayment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("PaymentMethod")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<DateTimeOffset>("ReceivedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("ReceivedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Reference")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<Guid>("SaleId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SaleId");
+
+                    b.ToTable("SalePayments", (string)null);
                 });
 
             modelBuilder.Entity("InventorySystem.Backend.Models.StockMovement", b =>
@@ -432,6 +483,17 @@ namespace InventorySystem.Backend.Migrations
                     b.Navigation("Purchase");
                 });
 
+            modelBuilder.Entity("InventorySystem.Backend.Models.Sale", b =>
+                {
+                    b.HasOne("InventorySystem.Backend.Models.Warehouse", "Warehouse")
+                        .WithMany()
+                        .HasForeignKey("WarehouseId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Warehouse");
+                });
+
             modelBuilder.Entity("InventorySystem.Backend.Models.SaleItem", b =>
                 {
                     b.HasOne("InventorySystem.Backend.Models.Product", "Product")
@@ -447,6 +509,17 @@ namespace InventorySystem.Backend.Migrations
                         .IsRequired();
 
                     b.Navigation("Product");
+
+                    b.Navigation("Sale");
+                });
+
+            modelBuilder.Entity("InventorySystem.Backend.Models.SalePayment", b =>
+                {
+                    b.HasOne("InventorySystem.Backend.Models.Sale", "Sale")
+                        .WithMany("Payments")
+                        .HasForeignKey("SaleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
 
                     b.Navigation("Sale");
                 });
@@ -511,6 +584,8 @@ namespace InventorySystem.Backend.Migrations
             modelBuilder.Entity("InventorySystem.Backend.Models.Sale", b =>
                 {
                     b.Navigation("Items");
+
+                    b.Navigation("Payments");
                 });
 
             modelBuilder.Entity("InventorySystem.Backend.Models.Warehouse", b =>

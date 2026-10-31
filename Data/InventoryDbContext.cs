@@ -13,6 +13,7 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
     public DbSet<PurchaseItem> PurchaseItems => Set<PurchaseItem>();
     public DbSet<Sale> Sales => Set<Sale>();
     public DbSet<SaleItem> SaleItems => Set<SaleItem>();
+    public DbSet<SalePayment> SalePayments => Set<SalePayment>();
     public DbSet<AuditEntry> AuditEntries => Set<AuditEntry>();
 
     protected override void OnModelCreating(ModelBuilder b)
@@ -84,13 +85,112 @@ b.Entity<StockMovement>(e =>
             e.Property(x => x.Status).HasMaxLength(40).IsRequired(); e.Property(x => x.TotalAmount).HasPrecision(18, 2); e.HasIndex(x => new { x.TenantId, x.Reference }).IsUnique();
             e.HasMany(x => x.Items).WithOne(x => x.Purchase).HasForeignKey(x => x.PurchaseId).OnDelete(DeleteBehavior.Restrict);
         });
-        b.Entity<PurchaseItem>(e => { e.ToTable("PurchaseItems"); e.HasKey(x => x.Id); e.Property(x => x.UnitCost).HasPrecision(18, 2); e.HasOne(x => x.Product).WithMany().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Restrict); });
-        b.Entity<Sale>(e => {
-            e.ToTable("Sales"); e.HasKey(x => x.Id); e.Property(x => x.Reference).HasMaxLength(100).IsRequired(); e.Property(x => x.CustomerName).HasMaxLength(200);
-            e.Property(x => x.Status).HasMaxLength(40).IsRequired(); e.Property(x => x.TotalAmount).HasPrecision(18, 2); e.HasIndex(x => new { x.TenantId, x.Reference }).IsUnique();
-            e.HasMany(x => x.Items).WithOne(x => x.Sale).HasForeignKey(x => x.SaleId).OnDelete(DeleteBehavior.Restrict);
+       b.Entity<PurchaseItem>(e =>
+        {
+            e.ToTable("PurchaseItems");
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.Quantity)
+                .HasPrecision(18, 3);
+
+            e.Property(x => x.UnitCost)
+                .HasPrecision(18, 2);
+
+            e.HasOne(x => x.Product)
+                .WithMany()
+                .HasForeignKey(x => x.ProductId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
-        b.Entity<SaleItem>(e => { e.ToTable("SaleItems"); e.HasKey(x => x.Id); e.Property(x => x.UnitPrice).HasPrecision(18, 2); e.HasOne(x => x.Product).WithMany().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Restrict); });
+        
+        b.Entity<Sale>(e =>
+        {
+            e.ToTable("Sales");
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.Reference)
+                .HasMaxLength(100)
+                .IsRequired();
+
+            e.Property(x => x.CustomerName)
+                .HasMaxLength(200);
+
+            e.Property(x => x.CustomerPhone)
+                .HasMaxLength(30);
+
+            e.Property(x => x.Status)
+                .HasMaxLength(40)
+                .IsRequired();
+
+            e.Property(x => x.TotalAmount)
+                .HasPrecision(18, 2);
+
+            e.HasIndex(x => new { x.TenantId, x.Reference })
+                .IsUnique();
+
+            e.HasIndex(x => new { x.TenantId, x.CreatedAtUtc });
+
+            e.HasOne(x => x.Warehouse)
+                .WithMany()
+                .HasForeignKey(x => x.WarehouseId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            e.HasMany(x => x.Items)
+                .WithOne(x => x.Sale)
+                .HasForeignKey(x => x.SaleId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            e.HasMany(x => x.Payments)
+                .WithOne(x => x.Sale)
+                .HasForeignKey(x => x.SaleId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        b.Entity<SaleItem>(e =>
+        {
+            e.ToTable("SaleItems");
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.Quantity)
+                .HasPrecision(18, 3);
+
+            e.Property(x => x.UnitPrice)
+                .HasPrecision(18, 2);
+
+            e.HasOne(x => x.Product)
+                .WithMany()
+                .HasForeignKey(x => x.ProductId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+
+        b.Entity<SalePayment>(e =>
+        {
+            e.ToTable("SalePayments");
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.Amount)
+                .HasPrecision(18, 2);
+
+            e.Property(x => x.PaymentMethod)
+                .HasMaxLength(40)
+                .IsRequired();
+
+            e.Property(x => x.Reference)
+                .HasMaxLength(100);
+
+            e.HasIndex(x => x.SaleId);
+
+            e.HasOne(x => x.Sale)
+                .WithMany(x => x.Payments)
+                .HasForeignKey(x => x.SaleId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+
+
+
+
+
         b.Entity<AuditEntry>(e => {
             e.ToTable("AuditEntries"); e.HasKey(x => x.Id); e.Property(x => x.ActorEmail).HasMaxLength(256).IsRequired(); e.Property(x => x.Action).HasMaxLength(100).IsRequired();
             e.Property(x => x.EntityName).HasMaxLength(100).IsRequired(); e.Property(x => x.EntityId).HasMaxLength(100); e.Property(x => x.Details).HasMaxLength(2000);
