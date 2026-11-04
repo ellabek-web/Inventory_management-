@@ -571,4 +571,522 @@ public sealed class SalesController : ControllerBase
 
 
 
+
+    [HttpPost("{id:guid}/payments")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> RecordPayment(
+        Guid id,
+        [FromBody] RecordSalePaymentRequest request,
+        CancellationToken cancellationToken)
+    {
+        // 1. Validate tenant
+        if (!Guid.TryParse(
+                User.FindFirst("tenant_id")?.Value,
+                out var tenantId))
+        {
+            return Unauthorized(new
+            {
+                message = "The authenticated user has no valid tenant claim."
+            });
+        }
+
+        // 2. Validate user
+        var userIdClaim =
+            User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+        if (!Guid.TryParse(userIdClaim, out var userId))
+        {
+            return Unauthorized(new
+            {
+                message = "The authenticated user has no valid user ID."
+            });
+        }
+
+        // 3. Validate payment method
+        var allowedMethods = new[]
+        {
+            "Cash",
+            "BankTransfer",
+            "MobileMoney",
+            "Card"
+        };
+
+        var paymentMethod = allowedMethods.FirstOrDefault(
+            method => string.Equals(
+                method,
+                request.PaymentMethod?.Trim(),
+                StringComparison.OrdinalIgnoreCase));
+
+        if (paymentMethod is null)
+        {
+            return BadRequest(new
+            {
+                message = "Invalid payment method. Allowed methods: Cash, BankTransfer, MobileMoney, Card."
+            });
+        }
+
+        // 4. Validate amount
+        if (request.Amount <= 0)
+        {
+            return BadRequest(new
+            {
+                message = "Payment amount must be greater than zero."
+            });
+        }
+
+        if (request.Amount > 9999999999999999.99m)
+        {
+            return BadRequest(new
+            {
+                message = "Payment amount exceeds the allowed limit."
+            });
+        }
+
+        // 5. Begin transaction
+        await using var transaction =
+            await _db.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
+
+        // 6. Find sale belonging to tenant
+        var sale = await _db.Sales
+            .FirstOrDefaultAsync(
+                s => s.Id == id && s.TenantId == tenantId,
+                cancellationToken);
+
+        if (sale is null)
+        {
+            return NotFound(new
+            {
+                message = "Sale not found."
+            });
+        }
+
+        // 7. Only completed sales can receive payments
+        if (sale.Status != "Completed")
+        {
+            return Conflict(new
+            {
+                message = "Payments can only be recorded for completed sales."
+            });
+        }
+
+        // 8. Calculate existing payments
+        var paidAmount = await _db.SalePayments
+            .Where(p => p.SaleId == sale.Id)
+            .SumAsync(
+                p => (decimal?)p.Amount,
+                cancellationToken) ?? 0m;
+
+        var outstandingAmount = sale.TotalAmount - paidAmount;
+
+        // 9. Prevent overpayment
+        if (outstandingAmount <= 0)
+        {
+            return Conflict(new
+            {
+                message = "This sale has already been fully paid.",
+                TotalAmount = sale.TotalAmount,
+                PaidAmount = paidAmount,
+                OutstandingAmount = 0m
+            });
+        }
+
+        if (request.Amount > outstandingAmount)
+        {
+            return Conflict(new
+            {
+                message = "Payment amount exceeds the outstanding balance.",
+                TotalAmount = sale.TotalAmount,
+                PaidAmount = paidAmount,
+                OutstandingAmount = outstandingAmount,
+                RequestedAmount = request.Amount
+            });
+        }
+
+        // 10. Create payment
+        var now = DateTimeOffset.UtcNow;
+
+        var payment = new SalePayment
+        {
+            SaleId = sale.Id,
+            Amount = request.Amount,
+            PaymentMethod = paymentMethod,
+            Reference = string.IsNullOrWhiteSpace(request.Reference)
+                ? null
+                : request.Reference.Trim(),
+            ReceivedAtUtc = now,
+            ReceivedByUserId = userId
+        };
+
+        _db.SalePayments.Add(payment);
+
+        // 11. Create audit entry
+        var actorEmail =
+            User.FindFirst(ClaimTypes.Email)?.Value
+            ?? User.Identity?.Name
+            ?? "Unknown";
+
+        _db.AuditEntries.Add(new AuditEntry
+        {
+            TenantId = tenantId,
+            ActorUserId = userId,
+            ActorEmail = actorEmail,
+            Action = "SalePaymentRecorded",
+            EntityName = "Sale",
+            EntityId = sale.Id.ToString(),
+            Details =
+                $"Payment of {request.Amount:F2} recorded for sale " +
+                $"{sale.Reference} using {paymentMethod}.",
+            CreatedAtUtc = now
+        });
+
+        // 12. Save and commit
+        await _db.SaveChangesAsync(cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+
+        // 13. Calculate updated balance
+        var newPaidAmount = paidAmount + request.Amount;
+        var newOutstandingAmount =
+            sale.TotalAmount - newPaidAmount;
+
+        var paymentStatus =
+            newPaidAmount >= sale.TotalAmount
+                ? "Paid"
+                : "PartiallyPaid";
+
+        return Ok(new
+        {
+            message = "Payment recorded successfully.",
+
+            PaymentId = payment.Id,
+            SaleId = sale.Id,
+            SaleReference = sale.Reference,
+
+            payment.Amount,
+            payment.PaymentMethod,
+            payment.Reference,
+            payment.ReceivedAtUtc,
+            payment.ReceivedByUserId,
+
+            TotalAmount = sale.TotalAmount,
+            PaidAmount = newPaidAmount,
+            OutstandingAmount = newOutstandingAmount,
+            PaymentStatus = paymentStatus
+        });
+    }
+
+
+    [HttpGet("{id:guid}/payments")]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> GetPaymentHistory(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        // 1. Validate tenant
+        if (!Guid.TryParse(
+                User.FindFirst("tenant_id")?.Value,
+                out var tenantId))
+        {
+            return Unauthorized(new
+            {
+                message = "The authenticated user has no valid tenant claim."
+            });
+        }
+
+        // 2. Find sale belonging to this tenant
+        var sale = await _db.Sales
+            .AsNoTracking()
+            .Where(s =>
+                s.Id == id &&
+                s.TenantId == tenantId)
+            .Select(s => new
+            {
+                s.Id,
+                s.Reference,
+                s.Status,
+                s.TotalAmount
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (sale is null)
+        {
+            return NotFound(new
+            {
+                message = "Sale not found."
+            });
+        }
+
+        // 3. Retrieve payment history
+        var payments = await _db.SalePayments
+            .AsNoTracking()
+            .Where(p => p.SaleId == sale.Id)
+            .OrderByDescending(p => p.ReceivedAtUtc)
+            .Select(p => new
+            {
+                p.Id,
+                p.Amount,
+                p.PaymentMethod,
+                p.Reference,
+                p.ReceivedAtUtc,
+                p.ReceivedByUserId
+            })
+            .ToListAsync(cancellationToken);
+
+        // 4. Calculate payment summary
+        var paidAmount = payments.Sum(p => p.Amount);
+
+        var outstandingAmount =
+            sale.TotalAmount - paidAmount;
+
+        var paymentStatus =
+            paidAmount <= 0
+                ? "Unpaid"
+                : paidAmount < sale.TotalAmount
+                    ? "PartiallyPaid"
+                    : "Paid";
+
+        // 5. Return payment history
+        return Ok(new
+        {
+            SaleId = sale.Id,
+            sale.Reference,
+            sale.Status,
+            sale.TotalAmount,
+
+            PaidAmount = paidAmount,
+            OutstandingAmount = outstandingAmount,
+            PaymentStatus = paymentStatus,
+
+            PaymentCount = payments.Count,
+            Payments = payments
+        });
+    }
+
+
+
+
+
+    [HttpGet]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> GetSales(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] string? search = null,
+        [FromQuery] string? status = null,
+        [FromQuery] string? paymentStatus = null,
+        [FromQuery] DateTimeOffset? fromUtc = null,
+        [FromQuery] DateTimeOffset? toUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        // 1. Validate pagination values.
+        if (page < 1)
+        {
+            return BadRequest(new
+            {
+                message = "Page must be greater than or equal to 1."
+            });
+        }
+
+        if (pageSize < 1 || pageSize > 100)
+        {
+            return BadRequest(new
+            {
+                message = "Page size must be between 1 and 100."
+            });
+        }
+
+        // 2. Get tenant ID from the authenticated user's JWT.
+        if (!Guid.TryParse(
+                User.FindFirst("tenant_id")?.Value,
+                out var tenantId))
+        {
+            return Unauthorized(new
+            {
+                message = "Invalid tenant information."
+            });
+        }
+
+        // 3. Build a tenant-scoped query.
+        var salesQuery = _db.Sales
+            .AsNoTracking()
+            .Where(s => s.TenantId == tenantId);
+
+
+       // 4. Apply search filter when provided.
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var searchTerm = search.Trim();
+
+            salesQuery = salesQuery.Where(s =>
+                s.Reference.Contains(searchTerm) ||
+                (s.CustomerName != null &&
+                s.CustomerName.Contains(searchTerm)));
+        }
+
+
+        // 5. Apply sale status filter when provided.
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            var normalizedStatus = status.Trim();
+
+            if (normalizedStatus != "Draft" &&
+                normalizedStatus != "Completed")
+            {
+                return BadRequest(new
+                {
+                    message = "Invalid sale status. Allowed values are Draft and Completed."
+                });
+            }
+
+            salesQuery = salesQuery.Where(s =>
+                s.Status == normalizedStatus);
+        }
+
+
+    // 6. Apply payment status filter when provided.
+    if (!string.IsNullOrWhiteSpace(paymentStatus))
+    {
+        var normalizedPaymentStatus = paymentStatus.Trim();
+
+        if (!normalizedPaymentStatus.Equals(
+                "Paid", StringComparison.OrdinalIgnoreCase) &&
+            !normalizedPaymentStatus.Equals(
+                "Unpaid", StringComparison.OrdinalIgnoreCase) &&
+            !normalizedPaymentStatus.Equals(
+                "PartiallyPaid", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new
+            {
+                message = "Invalid payment status. Allowed values are Paid, Unpaid, and PartiallyPaid."
+            });
+        }
+
+        if (normalizedPaymentStatus.Equals(
+                "Unpaid", StringComparison.OrdinalIgnoreCase))
+        {
+            salesQuery = salesQuery.Where(s =>
+                (s.Payments.Sum(p => (decimal?)p.Amount) ?? 0m) <= 0m);
+        }
+       else if (normalizedPaymentStatus.Equals(
+                    "PartiallyPaid", StringComparison.OrdinalIgnoreCase))
+        {
+            salesQuery = salesQuery.Where(s =>
+                (s.Payments.Sum(p => (decimal?)p.Amount) ?? 0m) > 0m &&
+                (s.Payments.Sum(p => (decimal?)p.Amount) ?? 0m) < s.TotalAmount);
+        }
+
+
+        else
+        {
+            salesQuery = salesQuery.Where(s =>
+                (s.Payments.Sum(p => (decimal?)p.Amount) ?? 0m) > 0m &&
+                (s.Payments.Sum(p => (decimal?)p.Amount) ?? 0m) >= s.TotalAmount);
+        }
+
+
+    }
+
+
+
+
+
+        // 7. Validate date range.
+        if (fromUtc.HasValue &&
+            toUtc.HasValue &&
+            fromUtc.Value > toUtc.Value)
+        {
+            return BadRequest(new
+            {
+                message = "fromUtc must be earlier than or equal to toUtc."
+            });
+        }
+
+        // 8. Apply start date filter.
+        if (fromUtc.HasValue)
+        {
+            salesQuery = salesQuery.Where(s =>
+                s.CreatedAtUtc >= fromUtc.Value);
+        }
+
+        // 9. Apply end date filter.
+        if (toUtc.HasValue)
+        {
+            salesQuery = salesQuery.Where(s =>
+                s.CreatedAtUtc <= toUtc.Value);
+        }
+
+
+
+
+
+
+        // 6. Count records before pagination.
+        var totalCount = await salesQuery.CountAsync(
+            cancellationToken);
+
+        // 7. Retrieve the requested page.
+        var sales = await salesQuery
+            .OrderByDescending(s => s.CreatedAtUtc)
+            .ThenByDescending(s => s.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(s => new
+            {
+                s.Id,
+                s.Reference,
+                s.CustomerName,
+                s.CustomerPhone,
+                s.Status,
+                s.TotalAmount,
+                s.CreatedAtUtc,
+
+                WarehouseId = s.WarehouseId,
+                WarehouseName = s.Warehouse.Name,
+
+                ItemCount = s.Items.Count(),
+
+                PaidAmount = s.Payments
+                    .Sum(p => (decimal?)p.Amount) ?? 0m
+            })
+            .ToListAsync(cancellationToken);
+
+        // 8. Return paginated results.
+        return Ok(new
+        {
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = totalCount,
+            TotalPages = (int)Math.Ceiling(
+                totalCount / (double)pageSize),
+
+            Items = sales.Select(s => new
+            {
+                s.Id,
+                s.Reference,
+                s.CustomerName,
+                s.CustomerPhone,
+                s.Status,
+                s.TotalAmount,
+                s.CreatedAtUtc,
+                s.WarehouseId,
+                s.WarehouseName,
+                s.ItemCount,
+                s.PaidAmount,
+
+                OutstandingAmount =
+                    s.TotalAmount - s.PaidAmount,
+
+                PaymentStatus =
+                    s.PaidAmount <= 0
+                        ? "Unpaid"
+                        : s.PaidAmount < s.TotalAmount
+                            ? "PartiallyPaid"
+                            : "Paid"
+            })
+        });
+    }
+
+
 }
