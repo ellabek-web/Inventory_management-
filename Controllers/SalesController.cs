@@ -102,19 +102,28 @@ public sealed class SalesController : ControllerBase
             });
         }
 
-        // Validate individual sale items.
+       // Validate individual sale items.
+        const decimal maxQuantity = 999999999999999.999m;
+        const decimal maxUnitPrice = 9999999999999999.99m;
+
         if (request.Items.Any(item =>
                 item.ProductId == Guid.Empty ||
                 item.Quantity <= 0 ||
-                item.UnitPrice < 0))
+                item.Quantity > maxQuantity ||
+                decimal.Round(item.Quantity, 3) != item.Quantity ||
+                item.UnitPrice < 0 ||
+                item.UnitPrice > maxUnitPrice ||
+                decimal.Round(item.UnitPrice, 2) != item.UnitPrice))
         {
             return BadRequest(new
             {
-                message = "Each item requires a product, positive quantity, and non-negative unit price."
+                message = "Each item requires a valid product, quantity greater than zero with at most 3 decimal places, and a non-negative unit price with at most 2 decimal places."
             });
         }
 
-        // Avoid duplicate product lines.
+        
+
+        // Avoid duplicate product lines.   
         if (request.Items
             .GroupBy(item => item.ProductId)
             .Any(group => group.Count() > 1))
@@ -125,13 +134,19 @@ public sealed class SalesController : ControllerBase
             });
         }
 
-        // Calculate the sale total on the server.
+       // Calculate the sale total on the server.
+        // Sum exact line totals first, then round the grand total to 2 decimal places.
         decimal totalAmount;
 
         try
         {
-            totalAmount = request.Items.Sum(item =>
+            var exactTotal = request.Items.Sum(item =>
                 checked(item.Quantity * item.UnitPrice));
+
+            totalAmount = Math.Round(
+                exactTotal,
+                2,
+                MidpointRounding.AwayFromZero);
 
             if (totalAmount > 9999999999999999.99m)
             {
@@ -209,17 +224,17 @@ public sealed class SalesController : ControllerBase
             });
         }
 
-        // Get the authenticated user ID.
-        Guid? createdByUserId = null;
-
-        if (Guid.TryParse(
+        // Get and validate the authenticated user ID.
+        if (!Guid.TryParse(
                 User.FindFirst(
                     System.Security.Claims.ClaimTypes.NameIdentifier)?.Value,
-                out var userId))
+                out var createdByUserId))
         {
-            createdByUserId = userId;
+            return Unauthorized(new
+            {
+                message = "The authenticated user has no valid user ID."
+            });
         }
-
         var now = DateTimeOffset.UtcNow;
 
         // Create the draft sale and its items.
