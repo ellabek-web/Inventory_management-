@@ -30,7 +30,9 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
             e.ToTable("Products"); e.HasKey(x => x.Id); e.Property(x => x.Name).HasMaxLength(200).IsRequired();
             e.Property(x => x.Sku).HasMaxLength(80).IsRequired(); e.Property(x => x.Barcode).HasMaxLength(100);
             e.Property(x => x.UnitOfMeasure).HasMaxLength(40).IsRequired(); e.Property(x => x.UnitCost).HasPrecision(18, 2); e.Property(x => x.SellingPrice).HasPrecision(18, 2);
-            e.HasIndex(x => new { x.TenantId, x.Sku }).IsUnique(); e.HasIndex(x => new { x.TenantId, x.Barcode });
+            e.HasIndex(x => new { x.TenantId, x.Sku }).IsUnique(); e.HasIndex(x => new { x.TenantId, x.Barcode })
+                .IsUnique()
+                .HasFilter("[Barcode] IS NOT NULL");
             e.HasOne(x => x.Tenant).WithMany(x => x.Products).HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Restrict);
         });
         b.Entity<Warehouse>(e => {

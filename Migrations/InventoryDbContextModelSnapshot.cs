@@ -168,7 +168,9 @@ namespace InventorySystem.Backend.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "Barcode");
+                    b.HasIndex("TenantId", "Barcode")
+                        .IsUnique()
+                        .HasFilter("[Barcode] IS NOT NULL");
 
                     b.HasIndex("TenantId", "Sku")
                         .IsUnique();

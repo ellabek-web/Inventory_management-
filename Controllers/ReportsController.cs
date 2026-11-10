@@ -829,5 +829,157 @@ public sealed class ReportsController : ControllerBase
         });
     }
 
+
+   
+    // GET: api/reports/audit-trail
+    [HttpGet("audit-trail")]
+    [Authorize(Roles = "Admin,Staff")]
+    public async Task<IActionResult> GetAuditTrailReport(
+        [FromQuery] string? search,
+        [FromQuery] string? action,
+        [FromQuery] string? entityName,
+        [FromQuery] Guid? actorUserId,
+        [FromQuery] DateTimeOffset? fromUtc,
+        [FromQuery] DateTimeOffset? toUtc,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
+    {
+        // 1. Validate pagination.
+        if (page < 1)
+        {
+            return BadRequest(new
+            {
+                message = "Page must be at least 1."
+            });
+        }
+
+        if (pageSize < 1 || pageSize > 100)
+        {
+            return BadRequest(new
+            {
+                message = "Page size must be between 1 and 100."
+            });
+        }
+
+        // 2. Validate date range.
+        if (fromUtc.HasValue &&
+            toUtc.HasValue &&
+            fromUtc.Value > toUtc.Value)
+        {
+            return BadRequest(new
+            {
+                message = "fromUtc must be earlier than or equal to toUtc."
+            });
+        }
+
+        // 3. Validate tenant.
+        var tenantValue = User.FindFirstValue("tenant_id");
+
+        if (!Guid.TryParse(tenantValue, out var tenantId))
+        {
+            return Unauthorized(new
+            {
+                message = "The authenticated user's tenant is invalid."
+            });
+        }
+
+        // 4. Start with tenant-scoped audit records.
+        var query = _db.AuditEntries
+            .AsNoTracking()
+            .Where(x => x.TenantId == tenantId);
+
+        // 5. Apply general search.
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var searchTerm = search.Trim();
+
+            query = query.Where(x =>
+                x.Action.Contains(searchTerm) ||
+                x.EntityName.Contains(searchTerm) ||
+                (x.EntityId != null &&
+                 x.EntityId.Contains(searchTerm)) ||
+                x.ActorEmail.Contains(searchTerm) ||
+                (x.Details != null &&
+                 x.Details.Contains(searchTerm)));
+        }
+
+        // 6. Apply action filter.
+        if (!string.IsNullOrWhiteSpace(action))
+        {
+            var actionTerm = action.Trim();
+
+            query = query.Where(x =>
+                x.Action == actionTerm);
+        }
+
+        // 7. Apply entity filter.
+        if (!string.IsNullOrWhiteSpace(entityName))
+        {
+            var entityTerm = entityName.Trim();
+
+            query = query.Where(x =>
+                x.EntityName == entityTerm);
+        }
+
+        // 8. Apply actor filter.
+        if (actorUserId.HasValue)
+        {
+            query = query.Where(x =>
+                x.ActorUserId == actorUserId.Value);
+        }
+
+        // 9. Apply date filters.
+        if (fromUtc.HasValue)
+        {
+            query = query.Where(x =>
+                x.CreatedAtUtc >= fromUtc.Value);
+        }
+
+        if (toUtc.HasValue)
+        {
+            query = query.Where(x =>
+                x.CreatedAtUtc <= toUtc.Value);
+        }
+
+        // 10. Count filtered records.
+        var totalCount = await query.CountAsync(
+            cancellationToken);
+
+        var totalPages = (int)Math.Ceiling(
+            totalCount / (double)pageSize);
+
+        // 11. Retrieve paginated audit records.
+        var entries = await query
+            .OrderByDescending(x => x.CreatedAtUtc)
+            .ThenByDescending(x => x.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x => new
+            {
+                x.Id,
+                x.ActorUserId,
+                x.ActorEmail,
+                x.Action,
+                x.EntityName,
+                x.EntityId,
+                x.Details,
+                x.CreatedAtUtc
+            })
+            .ToListAsync(cancellationToken);
+
+        // 12. Return report.
+        return Ok(new
+        {
+            page,
+            pageSize,
+            totalCount,
+            totalPages,
+            items = entries
+        });
+    }
+
+
+
 }
  
